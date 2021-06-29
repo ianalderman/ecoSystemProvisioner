@@ -39,7 +39,7 @@ namespace GingerDesigns.ecoSytemProvisioner
                 string ownerEmail = context.GetInput<ecoSystemRequest>()?.OwnerEmail;
                 string catalogName = "Engineering"; //Hard coded for now
                 string orgName = "EgUnicorn"; // Hard coded for now
-                string orgRepoTemplate = "or    g-template"; // Hard coded for now
+                string orgRepoTemplate = "org-template"; // Hard coded for now
                 string subscriptionId = Environment.GetEnvironmentVariable("AZURE_SUBSCRIPTION"); // Hard coded for now
                 var retryOptions = new RetryOptions(
                     firstRetryInterval: TimeSpan.FromSeconds(5),
