@@ -15,12 +15,13 @@ using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.DurableTask;
 using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.Azure.WebJobs.Host;
-using Newtonsoft.Json;
+//using Newtonsoft.Json;
 using Microsoft.AspNetCore.Http;
 using Octokit;
 using System.Linq;
 using Sodium;
 using System.IO;
+using System.Threading;
 
 namespace GingerDesigns.ecoSytemProvisioner
 {
@@ -35,84 +36,115 @@ namespace GingerDesigns.ecoSytemProvisioner
 
 
             try {
-                string appName = context.GetInput<ecoSystemRequest>()?.AppName;
-                string ownerEmail = context.GetInput<ecoSystemRequest>()?.OwnerEmail;
+                string appName = context.GetInput<EcoSystemRequest>()?.AppName;
+                string ownerEmail = context.GetInput<EcoSystemRequest>()?.OwnerEmail;
                 string catalogName = "Engineering"; //Hard coded for now
                 string orgName = "EgUnicorn"; // Hard coded for now
                 string orgRepoTemplate = "org-template"; // Hard coded for now
                 string subscriptionId = Environment.GetEnvironmentVariable("AZURE_SUBSCRIPTION"); // Hard coded for now
+                string myaccessLink = "@egunicorn.co.uk" ; // Hard coded for now
+
                 var retryOptions = new RetryOptions(
                     firstRetryInterval: TimeSpan.FromSeconds(5),
                     maxNumberOfAttempts: 5
                 );
                 retryOptions.BackoffCoefficient = 2;
-                
-                logger.LogDebug($"AppName:{appName}");
 
+                //Add Security Group to contain the Application Team Members
                 AadGroupDefinition teamMembersGroupDef = new AadGroupDefinition(appName, false, false);
                 teamMembersGroupDef.addOwners(ownerEmail);
                 
                 logger.LogDebug("Calling add Team Members AAD Group");
                 var aadTeamMembersGroupId = await context.CallActivityAsync<string>(nameof(createAADGroup),teamMembersGroupDef );
                 
+                //Add Security Group to contain the Application Team Managers
                 AadGroupDefinition teamOwnersGroupDef = new AadGroupDefinition(appName, true, false);
                 teamOwnersGroupDef.addOwners(ownerEmail);
                 
                 logger.LogDebug("Calling add Team Owners AAD Group");
                 var aadTeamOwnersGroupId = await context.CallActivityAsync<string>(nameof(createAADGroup), teamOwnersGroupDef);
 
-                logger.LogDebug($"Getting Catalog Id for {catalogName}");
+                //Look up the Catalog Id for the Entitlement Packages
                 var catalogId = await context.CallActivityAsync<string>(nameof(getCatalogId), catalogName);
 
+                //Add the Application Team Members group to the Entitlement Management Catalog
                 AccessPackageCatalogResource teamGroupResourceReq = new AccessPackageCatalogResource(catalogId, aadTeamMembersGroupId);
                 logger.LogDebug($"Adding {teamMembersGroupDef.Name} to catalog {catalogName}");
                 var aadTeamMemberGroupResourceRequest = await context.CallActivityWithRetryAsync<string>(nameof(addAADGroupToEntitlementManagementCatalog), retryOptions, teamGroupResourceReq);
 
-                AccessPackageCatalogResource mgrGroupResourceReq = new AccessPackageCatalogResource(catalogId, aadTeamMembersGroupId);
+                //Add the Application Team Managers group to the Entitlement Management Catalog
+                AccessPackageCatalogResource mgrGroupResourceReq = new AccessPackageCatalogResource(catalogId, aadTeamOwnersGroupId);
                 mgrGroupResourceReq.CatalogId = catalogId;
                 mgrGroupResourceReq.GroupId = aadTeamOwnersGroupId;
                 logger.LogDebug($"Adding {teamOwnersGroupDef.Name} to catalog {catalogName}");
                 string aadTeamManagerGroupResourceRequest = await context.CallActivityWithRetryAsync<string>(nameof(addAADGroupToEntitlementManagementCatalog), retryOptions, mgrGroupResourceReq);
-                AccessPackageDefinition teamAccessPackageDef = new AccessPackageDefinition(appName, false, catalogId);
 
+                //Create the Access Package for the Application Team Members
+                AccessPackageDefinition teamAccessPackageDef = new AccessPackageDefinition(appName, false, catalogId);
                 var teamsAccessPackageId = await context.CallActivityWithRetryAsync<string>(nameof(createAccessPackage), retryOptions, teamAccessPackageDef);
 
+                //Create an Access Policy for the Application Team Members Application Package
+                AccessPackagePolicyDefinition teamsAccessPackagePolDef = new AccessPackagePolicyDefinition(teamsAccessPackageId,ownerEmail, appName );
+                var teamsAccessPackagePolicyId = await context.CallActivityWithRetryAsync<string>(nameof(addAccesPolicyToAccessPackage), retryOptions, teamsAccessPackagePolDef);
+              
+                //Create the Access Package for the Application Team Managers
                 AccessPackageDefinition mgrAccessPackageDef = new AccessPackageDefinition(appName, true, catalogId);
-                logger.LogInformation($"Catalog {catalogName} CatalogId updated to: {mgrAccessPackageDef.CatalogId}");
                 mgrAccessPackageDef.CatalogId = catalogId;
                 var mgrAccessPackageId = await context.CallActivityAsync<string>(nameof(createAccessPackage), mgrAccessPackageDef);
-                //Type: Group / O365 Group
-                AccessPackageResourceToAdd teamAccessPackageAADGroup = new AccessPackageResourceToAdd(catalogId, aadTeamMemberGroupResourceRequest, teamsAccessPackageId, "Member", teamMembersGroupDef.Name, "Group", "AadGroup");
+                
+                //Valid Group Types: Group / O365 Group
+                //Add the Application Team Members Security Group Catalog Entry to the Access Package add as Members
+                AccessPackageResourceToAdd teamAccessPackageAADGroup = new AccessPackageResourceToAdd(catalogId, aadTeamMemberGroupResourceRequest, teamsAccessPackageId, "Member", teamMembersGroupDef.Name, "Group", "AadGroup", aadTeamMembersGroupId);
                 var teamsAccessPackageAadGroupAdd = await context.CallActivityWithRetryAsync<string>(nameof(addResourceRoleToAccessPackage), retryOptions, teamAccessPackageAADGroup);
 
+                //Create the Microsoft Teams Team
                 var teamsDef = new TeamDefinition($"{appName} Engineering Team");
                 teamsDef.addOwners(ownerEmail);
                 var teamCreated = await context.CallActivityAsync<bool>(nameof(createTeam), teamsDef);
 
-                var microsoftTeamGroupId = await context.CallActivityAsync<string>(nameof(getMicrosoftTeamsGroup), teamsDef.TeamName);
-
-                var addOwner = await context.CallActivityAsync<bool>(nameof(addAppToGroupOwners),microsoftTeamGroupId );
-
+                //Lookup the underlying Microsoft Teams Team Security Group created for the above Team
+                var microsoftTeamGroupId = await context.CallActivityWithRetryAsync<string>(nameof(getMicrosoftTeamsGroup), retryOptions, teamsDef.TeamName);
+                //Add the Ecosystem app as an owner to the group (We cannot manage groups we do not own under Graph)
+                var addAppOwner = await context.CallActivityWithRetryAsync<bool>(nameof(addAppToGroupOwners),retryOptions, microsoftTeamGroupId );
+                //Add the Microsoft Teams Team Security Group to the Entitlement Management Catalog
                 AccessPackageCatalogResource teamUnifiedGroupResourceReq = new AccessPackageCatalogResource(catalogId, microsoftTeamGroupId);
                 logger.LogDebug($"Adding {teamMembersGroupDef.Name} to catalog {catalogName}");
                 var aadMicrosofotTeamMemberGroupResourceRequest = await context.CallActivityWithRetryAsync<string>(nameof(addAADGroupToEntitlementManagementCatalog), retryOptions, teamUnifiedGroupResourceReq);
 
-                AccessPackageResourceToAdd teamAccessPackageMSFTTeamsAADGroup = new AccessPackageResourceToAdd(catalogId, aadMicrosofotTeamMemberGroupResourceRequest, teamsAccessPackageId, "Member", teamsDef.TeamName, "O365 Group", "AadGroup");
+                //Add the Microsoft Teams Team Security Group Catalog Entry to the Application Team Members Access Package as Members
+                AccessPackageResourceToAdd teamAccessPackageMSFTTeamsAADGroup = new AccessPackageResourceToAdd(catalogId, aadMicrosofotTeamMemberGroupResourceRequest, teamsAccessPackageId, "Member", teamsDef.TeamName, "O365 Group", "AadGroup", microsoftTeamGroupId);
                 var teamsAccessPackageMicrosoftTeamsAadGroupAdd = await context.CallActivityWithRetryAsync<string>(nameof(addResourceRoleToAccessPackage), retryOptions, teamAccessPackageMSFTTeamsAADGroup);
 
-
+                //Create a default GitHub Repo for the Application
                 var repoDef = new GitHubRepoDefinition(orgName, appName.Replace(" ", "-"), $"Source code for {appName}", orgRepoTemplate);
                 var gitHubRepo = await context.CallActivityAsync<bool>(nameof(addGitHubRepo), repoDef);
 
-
+                //Create a GitHub Team sync'd to the Application Team Members Security Group
                 var gitHubTeamDefinition = new GitHubTeamDefinition(teamMembersGroupDef.Name, orgName, appName, aadTeamMembersGroupId, teamMembersGroupDef.Name, teamMembersGroupDef.Description, repoDef.Name, repoDef.Org);
                 var gitHubTeam = await context.CallActivityAsync<int>(nameof(addGitHubTeam), gitHubTeamDefinition);
 
+                //Create a Service Principal for the Application
                 ServicePrincipalDefinition spDef = new ServicePrincipalDefinition($"spn-for-{appName}", true, repoDef.Name, repoDef.Org, subscriptionId);
-                var svcP = await context.CallActivityWithRetryAsync<string>(nameof(createServicePrincipal), retryOptions, spDef);
+                var svcP = await context.CallActivityWithRetryAsync<bool>(nameof(createServicePrincipal), retryOptions, spDef);
 
-            } catch {
-                logger.LogError("Error in orchestrator");
+                //Send confirmation Emails
+                var ecoSystemReq = new EcoSystemRequest() {
+                    AppId = context.GetInput<EcoSystemRequest>()?.AppId,
+                    AppName = context.GetInput<EcoSystemRequest>()?.AppName,
+                    OwnerEmail = context.GetInput<EcoSystemRequest>()?.OwnerEmail,
+                    BudgetCode = context.GetInput<EcoSystemRequest>()?.BudgetCode,
+                    Criticality = context.GetInput<EcoSystemRequest>()?.Criticality,
+                    Audience = context.GetInput<EcoSystemRequest>()?.Audience,
+                    GitHubOrg = orgName,
+                    GitHubRepo = repoDef.Name,
+                    MSFTTeam = teamsDef.TeamName,
+                    AcccessPackageLink = $"https://myaccess.microsoft.com{myaccessLink}#/access-packages/{teamsAccessPackageId}"
+                };
+
+                var emailsSent = await context.CallActivityAsync<bool>(nameof(sendConfirmationEmails), ecoSystemReq);
+                logger.LogInformation($"EcoSystem Provisioner completed for {appName}");
+            } catch (Exception ex) {
+                logger.LogError($"Error in orchestrator {ex.Message}");
                 return false;
             }
             return true;
@@ -173,7 +205,6 @@ namespace GingerDesigns.ecoSytemProvisioner
                             }
                         }
                     }
-                    return true;
                 }
 
                 var directoryObject = await graphServiceClient.DirectoryObjects[appId].Request().GetAsync();
@@ -193,80 +224,88 @@ namespace GingerDesigns.ecoSytemProvisioner
         [FunctionName("createAADGroup")]
         public static async Task<string> Run([ActivityTrigger] AadGroupDefinition groupDef, ILogger logger)
             {
-                logger.LogInformation("Processing Create AAD Group");
-
+                logger.LogInformation($"Processing Create AAD Group: {groupDef.Name} for App {groupDef.AppName}");
                 GraphServiceClient graphServiceClient = graphClientBuilder.getGraphClient();
-            
-                var existingGroup = await graphServiceClient.Groups.Request().Filter($"displayName eq '{groupDef.Name}'").GetAsync();
-                logger.LogDebug($"existing Group Count:{existingGroup.Count}");
 
-                if (existingGroup.Count == 0) {
-                    Group newGroup;
+                try {
+                    var existingGroup = await graphServiceClient.Groups.Request().Filter($"displayName eq '{groupDef.Name}'").GetAsync();
+                    logger.LogDebug($"existing Group Count:{existingGroup.Count}");
+                
+                    if (existingGroup.Count == 0) {
+                        Group newGroup;
 
-                    try {
-                        //In order to add to an access package as an application we need the app to be an owner too...
-                        string appId = "";
+                        try {
+                            //In order to add to an access package as an application we need the app to be an owner too...
+                            string appId = "";
 
-                        if(!String.IsNullOrEmpty(Environment.GetEnvironmentVariable("UserAssignedIdentity"))) {
-                            appId = Environment.GetEnvironmentVariable("UserAssignedIdentity");
-                        } else {
-                            appId = Environment.GetEnvironmentVariable("AZURE_SPN_ID");
-                        }
+                            if(!String.IsNullOrEmpty(Environment.GetEnvironmentVariable("UserAssignedIdentity"))) {
+                                appId = Environment.GetEnvironmentVariable("UserAssignedIdentity");
+                            } else {
+                                appId = Environment.GetEnvironmentVariable("AZURE_SPN_ID");
+                            }
 
-                        var directoryObject = await graphServiceClient.DirectoryObjects[appId].Request().GetAsync();
+                            var directoryObject = await graphServiceClient.DirectoryObjects[appId].Request().GetAsync();
 
-                        if (groupDef.GroupType == "Unified") {
-                            var group = new Group
-                            {
-                                Description = groupDef.Description,
-                                DisplayName = groupDef.Name,
-                                GroupTypes = new List<String>()
+                            if (groupDef.GroupType == "Unified") {
+                                var group = new Group
                                 {
-                                    "Unified"
-                                },
-                                MailEnabled = true,
-                                MailNickname = groupDef.MailNickname,
-                                SecurityEnabled = false
-                            };
-                          
-                            foreach(string upn in groupDef.Owners) {
-                                group.AddOwner(upn);
-                            }
-
-                            newGroup = await graphServiceClient.Groups
-                            .Request()
-                            .AddAsync(group);
-                        } else {
-                            var group = new Group
-                            {
-                                Description = groupDef.Description,
-                                DisplayName = groupDef.Name,
-                                MailEnabled = false,
-                                MailNickname = groupDef.MailNickname,
-                                SecurityEnabled = true
-                            };
-
-                            foreach(string upn in groupDef.Owners) {
-                                group.AddOwner(upn);
-                            }
+                                    Description = groupDef.Description,
+                                    DisplayName = groupDef.Name,
+                                    GroupTypes = new List<String>()
+                                    {
+                                        "Unified"
+                                    },
+                                    MailEnabled = true,
+                                    MailNickname = groupDef.MailNickname,
+                                    SecurityEnabled = false
+                                };
                             
-                            newGroup = await graphServiceClient.Groups
-                            .Request()
-                            .AddAsync(group);
+                                foreach(string upn in groupDef.Owners) {
+                                    group.AddOwner(upn);
+                                }
+                                
+                                newGroup = await graphServiceClient.Groups
+                                .Request()
+                                .AddAsync(group);
+                                logger.LogInformation($"Added Unified Group {groupDef.Name} for app {groupDef.AppName}");
+                            } else {
+                                var group = new Group
+                                {
+                                    Description = groupDef.Description,
+                                    DisplayName = groupDef.Name,
+                                    MailEnabled = false,
+                                    MailNickname = groupDef.MailNickname,
+                                    SecurityEnabled = true
+                                };
+
+                                foreach(string upn in groupDef.Owners) {
+                                    group.AddOwner(upn);
+                                }
+                                
+                                newGroup = await graphServiceClient.Groups
+                                .Request()
+                                .AddAsync(group);
+                                logger.LogInformation($"Added Group {groupDef.Name} for app {groupDef.AppName}");
+                            }
+                            //Need to avoid race conditions on the retry, sleeping
+                            Thread.Sleep(15000);
+                            await graphServiceClient.Groups[newGroup.Id].Owners.References.Request().AddAsync(directoryObject);
+                            logger.LogInformation($"Added EcoSystem App as owner for {groupDef.Name} for app {groupDef.AppName}");
+                        } catch (Exception ex) {
+                            throw new Exception($"Error creating group: {ex.Message}");
                         }
 
-                        await graphServiceClient.Groups[newGroup.Id].Owners.References.Request().AddAsync(directoryObject);
-                    } catch {
-                        throw new Exception("Error creating group");
-                    }
-
-                    return newGroup.Id;
-                } else {
-                    if (existingGroup.Count == 1) {
-                        return existingGroup[0].Id;
+                        return newGroup.Id;
                     } else {
-                        throw new Exception($"Duplicate existing matching groups found for {groupDef.Name}");
+                        if (existingGroup.Count == 1) {
+                            logger.LogInformation($"Group {groupDef.Name} for app {groupDef.AppName} already exists");
+                            return existingGroup[0].Id;
+                        } else {
+                            throw new Exception($"Duplicate existing matching groups found for {groupDef.Name}");
+                        }
                     }
+                } catch (Exception ex) {
+                    throw new Exception($"Error creating Group: {ex.Message}");
                 }
             }
     }
@@ -276,7 +315,7 @@ namespace GingerDesigns.ecoSytemProvisioner
         public static async Task<string> Run([ActivityTrigger] AccessPackageCatalogResource ackPkgResource,
             ILogger logger)
         {
-            logger.LogInformation("Executing addAADGroupToEntitlementManagementCatalog");
+            logger.LogInformation($"Executing addAADGroupToEntitlementManagementCatalog for Group {ackPkgResource.GroupId} and Catalog {ackPkgResource.CatalogId}");
 
             GraphServiceClient graphServiceClient = graphClientBuilder.getGraphClient();
 
@@ -302,9 +341,18 @@ namespace GingerDesigns.ecoSytemProvisioner
                         };
 
                         newAccessPackageResourceRequest = await graphServiceClient.IdentityGovernance.EntitlementManagement.AccessPackageResourceRequests.Request().WithMaxRetry(5).AddAsync(accessPackageResourceRequest);
-                        return newAccessPackageResourceRequest.Id;
+                        //Thread.Sleep(10000);
+                        //we get an ID back for the request, what we need to do is now get the actual Id assigned
+                        var newResource = await graphServiceClient.IdentityGovernance.EntitlementManagement.AccessPackageCatalogs[ackPkgResource.CatalogId].AccessPackageResources.Request().Filter($"originId eq '{ackPkgResource.GroupId}'").GetAsync();
+                        if (newResource.Count == 0) {
+                            throw new Exception($"Group {ackPkgResource.GroupId} has not completed provisioning, please retry");
+                        } else {
+                            return newResource[0].Id;
+                        }
+                        
                 } else {
                     if (existingResource.Count == 1) {
+                        logger.LogInformation($"Resource already created in Catalog");
                         return existingResource[0].Id;
                     } else {
                         throw new Exception("Duplicate existing resources found");
@@ -315,6 +363,118 @@ namespace GingerDesigns.ecoSytemProvisioner
             }
             
            
+        }
+    }
+    public static class addAccesPolicyToAccessPackage {
+        [FunctionName("addAccesPolicyToAccessPackage")]
+        public static async Task<string> Run([ActivityTrigger] AccessPackagePolicyDefinition accessPkgPolDef, ILogger logger) {
+            try {
+                logger.LogInformation ($"Adding Access Package Policy for {accessPkgPolDef.AccessPackageId}");
+                GraphServiceClient graphServiceClient = graphClientBuilder.getGraphClient();
+
+                var existingPolicy = await graphServiceClient.IdentityGovernance.EntitlementManagement.AccessPackages[accessPkgPolDef.AccessPackageId].Request().Expand("AccessPackageAssignmentPolicies").GetAsync();
+                if (existingPolicy.AccessPackageAssignmentPolicies != null) {
+                    if (existingPolicy.AccessPackageAssignmentPolicies.Count == 1) {
+                        logger.LogInformation("Access Package Policy already created");
+                        return existingPolicy.AccessPackageAssignmentPolicies[0].Id;
+                    }
+
+                    if (existingPolicy.AccessPackageAssignmentPolicies.Count> 1) {
+                        throw new Exception ("Multiple access policies already defined!");
+                    }
+                }
+                
+                var owner = await graphServiceClient.Users[accessPkgPolDef.Owner].Request().GetAsync();
+            
+                var accessPol = new AccessPackageAssignmentPolicy {
+                    AccessPackageId = accessPkgPolDef.AccessPackageId,
+                    DisplayName = $"Manage Access for {accessPkgPolDef.AppName}",
+                    Description = $"Enable Self-Service to join the {accessPkgPolDef.AppName} team",
+                    AccessReviewSettings = null,
+                    RequestorSettings = new RequestorSettings
+                    {
+                        ScopeType = "AllExistingDirectorySubjects",
+                        AcceptRequests = true
+                    },
+                    RequestApprovalSettings = new ApprovalSettings
+                    {
+                        IsApprovalRequired = true,
+                        IsApprovalRequiredForExtension = false,
+                        IsRequestorJustificationRequired = false,
+                        ApprovalMode = "SingleStage",
+                        ApprovalStages = new List<ApprovalStage>()
+                        {
+                            new ApprovalStage
+                            {
+                                ApprovalStageTimeOutInDays = 14,
+                                IsApproverJustificationRequired = true,
+                                IsEscalationEnabled = false,
+                                EscalationTimeInMinutes = 0,
+                                PrimaryApprovers = new List<UserSet>()
+                                {
+                                    new SingleUser
+                                    {
+                                        ODataType = "#microsoft.graph.singleUser",
+                                        IsBackup = false,
+                                        Id = owner.Id,
+                                        Description = "App Owner"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    Questions = new List<AccessPackageQuestion>()
+                    {
+                        new AccessPackageMultipleChoiceQuestion 
+                        {
+                            IsRequired = true,
+                            Text = new AccessPackageLocalizedContent
+                            {
+                                DefaultText = "Please confirm you will abide by EgUnicorn's Safe Development Lifecycle and comply with our Security & Privacy policies"
+                            },
+                            Choices = new List<AccessPackageAnswerChoice>() 
+                            {
+                                new AccessPackageAnswerChoice
+                                {
+                                    ActualValue = "Yes",
+                                    DisplayValue = new AccessPackageLocalizedContent
+                                    {
+                                        LocalizedTexts = new List<AccessPackageLocalizedText>()
+                                        {
+                                            new AccessPackageLocalizedText
+                                            {
+                                                Text = "Yes",
+                                                LanguageCode = "en"
+                                            }
+                                        }
+                                    }
+                                },
+                                new AccessPackageAnswerChoice
+                                {
+                                    ActualValue = "No",
+                                    DisplayValue = new AccessPackageLocalizedContent
+                                    {
+                                        LocalizedTexts = new List<AccessPackageLocalizedText>()
+                                        {
+                                            new AccessPackageLocalizedText
+                                            {
+                                                Text = "No",
+                                                LanguageCode = "en"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }  
+                    }
+                };
+                
+                var accessPolRequest = await graphServiceClient.IdentityGovernance.EntitlementManagement.AccessPackageAssignmentPolicies.Request().AddAsync(accessPol);
+                logger.LogInformation("Access Policy created");
+                return accessPolRequest.Id;
+            } catch (Exception ex) {
+                throw new Exception ($"Error adding Access Policy to package: {ex.Message}");
+            }
         }
     }
     public static class getCatalogId {
@@ -339,7 +499,7 @@ namespace GingerDesigns.ecoSytemProvisioner
         public static async Task<string> Run([ActivityTrigger] AccessPackageDefinition accessPackageDef,
             ILogger logger)
         {
-            logger.LogInformation("Processing Access Package Request");
+            logger.LogInformation($"Processing Access Package Request for {accessPackageDef.AppName}");
 
             GraphServiceClient graphServiceClient = graphClientBuilder.getGraphClient();
 
@@ -356,10 +516,11 @@ namespace GingerDesigns.ecoSytemProvisioner
                 var newAccessPackage = await graphServiceClient.IdentityGovernance.EntitlementManagement.AccessPackages
                 .Request()
                 .AddAsync(accessPackage);
-
+                logger.LogInformation("Access Package Created");
                 return newAccessPackage.Id;
             } else {
                 if (existingPackage.Count == 1) {
+                    logger.LogInformation("Existing Access Package Found");
                     return existingPackage[0].Id;
                 } else {
                     throw new Exception("Duplicate Access Packages already exist unable to identify correct Id");
@@ -377,11 +538,20 @@ namespace GingerDesigns.ecoSytemProvisioner
             GraphServiceClient graphServiceClient = graphClientBuilder.getGraphClient();               
 
             try {
+                var accessPackageResources = await graphServiceClient.IdentityGovernance.EntitlementManagement.AccessPackageCatalogs[accessPackageResource.CatalogId].AccessPackageResources.Request().Filter($"originId eq '{accessPackageResource.OriginId}'").GetAsync();
+
+                if (accessPackageResources.Count > 1) {
+                    throw new Exception ("Duplicate access package catalog resources found");
+                }
+
+                if (accessPackageResources.Count == 0) {
+                    throw new Exception("Unable to locate matching Access package catalog resource");
+                }
+
                 var accessPackageResourceRoles = await graphServiceClient.IdentityGovernance.EntitlementManagement.AccessPackageCatalogs[accessPackageResource.CatalogId].AccessPackageResourceRoles
                     .Request()
                     .Filter($"(originSystem eq 'AadGroup' and accessPackageResource/id eq '{accessPackageResource.ResourceId}' and displayName eq '{accessPackageResource.RoleName}')")
                     .Expand($"accessPackageResource")
-                    .WithMaxRetry(5)
                     .GetAsync();
 
                 if (accessPackageResourceRoles.Count != 1) {
@@ -421,7 +591,8 @@ namespace GingerDesigns.ecoSytemProvisioner
                     };
 
                    
-                    var responseId = await graphServiceClient.IdentityGovernance.EntitlementManagement.AccessPackages[accessPackageResource.AccessPackageId].AccessPackageResourceRoleScopes.Request().WithMaxRetry(5).AddAsync(accessPackageResourceRoleScope);
+                    var responseId = await graphServiceClient.IdentityGovernance.EntitlementManagement.AccessPackages[accessPackageResource.AccessPackageId].AccessPackageResourceRoleScopes.Request().AddAsync(accessPackageResourceRoleScope);
+                    logger.LogInformation($"Role Scope added for {accessPackageResource.DisplayName} role {accessPackageResource.RoleName}");
                     return responseId.Id;
                 }
             } catch(Exception ex) {
@@ -452,6 +623,7 @@ namespace GingerDesigns.ecoSytemProvisioner
                 var newAppId = "";
 
                 if (existingApp.Count == 1) {
+                    logger.LogInformation($"Application for {svcPrincipalDef.Name} already exists");
                     newAppId = existingApp[0].AppId;
                 }
 
@@ -466,12 +638,17 @@ namespace GingerDesigns.ecoSytemProvisioner
 
                     var newApp = await graphServiceClient.Applications.Request().AddAsync(app);
                     newAppId = newApp.Id;
+                    logger.LogInformation($"Created new Application for {svcPrincipalDef.Name}");
+                    //Need to pause we end up in a race condition where the SP fails as it can't find the app.  The retries kick in and can't find the app so recreate it
+                    Thread.Sleep(10000);
                 }
                 
                 var existingSP = await graphServiceClient.ServicePrincipals.Request().Filter($"AppId eq '{newAppId}'").GetAsync();
 
                 if (existingSP.Count == 1) {
-                    throw new Exception("Service Principal already exists, aborting");
+                    //throw new Exception("Service Principal already exists, aborting");
+                    logger.LogInformation($"Service Principal {svcPrincipalDef.Name} already exists");
+                    return true;
                 }
 
                 if (existingSP.Count > 1) {
@@ -484,14 +661,15 @@ namespace GingerDesigns.ecoSytemProvisioner
                     };
 
                     var newSp = await graphServiceClient.ServicePrincipals.Request().AddAsync(svcPrincipal);
-
+                    logger.LogInformation($"Service Principal {svcPrincipalDef.Name} created");
                     var passwordCredential = new V1Graph.PasswordCredential
                     {
                         DisplayName = "Password friendly name"
                     };
                     
                     var addPasswordResponse = await graphServiceClient.ServicePrincipals[newSp.Id].AddPassword(passwordCredential).Request().PostAsync();
-
+                    logger.LogInformation($"Service Principal {svcPrincipalDef.Name} password added");
+                    //*** We need to configure the GitHub Secret here, we don't want to pass it back to the Orchestrator as there is a risk it will be stored as part of the durable functions serialization **/
                     var client = new GitHubClient(new Octokit.ProductHeaderValue("EcoSystemProvisioner"));
                     var tokenAuth = new Credentials(System.Environment.GetEnvironmentVariable("GITHUB_PAT")); // NOTE: need to move to akv
                     client.Credentials = tokenAuth;
@@ -517,10 +695,9 @@ namespace GingerDesigns.ecoSytemProvisioner
                     newSecret.repo = svcPrincipalDef.RepoName;
 
                     var putURI = new System.UriBuilder($"https://api.github.com/repos/{svcPrincipalDef.RepoOrg}/{svcPrincipalDef.RepoName}/actions/secrets/{newSecret.secret_name}");
-                    //string ev = $"{{owner: \"{svcPrincipalDef.RepoOrg}\",repo: \"{svcPrincipalDef.RepoName}\",secret_name: \"{newSecret.secret_name}\",key_id: \"{publicKeyRequest.Body.key_id}\",encrypted_value:\"{Convert.ToBase64String(sealedPublicKeyBox)}\"}}";
-                    //string ev = $"{{\"owner\": \"{svcPrincipalDef.RepoOrg}\", \"repo\": \"{svcPrincipalDef.RepoName}\", \"secret_name\": \"{newSecret.secret_name}\", \"key_id\": \"{publicKeyRequest.Body.key_id}\", \"encrypted_value\":\"{Convert.ToBase64String(sealedPublicKeyBox)}\"}}";
+                    
                     var secretAddRequest = await client.Connection.Put<string>(putURI.Uri, newSecret ); 
-
+                    logger.LogInformation($"Service Principal Secret added to Repo {svcPrincipalDef.RepoName}");
                     //https://docs.microsoft.com/en-us/azure/role-based-access-control/role-assignments-rest
                     string restURI = $"https://management.azure.com/subscriptions/{svcPrincipalDef.SubscriptionId}/providers/Microsoft.Authorization/roleAssignments/{Guid.NewGuid()}?api-version=2018-09-01-preview";
                     WebRequest addToContributorRole = WebRequest.Create(restURI);
@@ -543,6 +720,7 @@ namespace GingerDesigns.ecoSytemProvisioner
                     }
 
                     var httpResponse = await addToContributorRole.GetResponseAsync();
+                    logger.LogInformation($"Service Principal added as Contributor");
                 }
             } catch (Exception ex) {
                 throw new Exception($"Error adding Service Principal: {ex.Message}");
@@ -742,12 +920,38 @@ namespace GingerDesigns.ecoSytemProvisioner
                 };
                 */
                 var newTeam = await graphServiceClient.Teams.Request().AddAsync(team);
-                
+                logger.LogInformation($"Team {teamDef.TeamName} created");
+                Thread.Sleep(15000);
                 return true;
             } catch(Exception ex) {
                 throw new Exception($"Error creating Team: {ex}");
             }
         } 
+    }
+   
+    public static class sendConfirmationEmails{
+        [FunctionName("sendConfirmationEmails")]
+        public static async Task<bool> Run([ActivityTrigger] EcoSystemRequest request, ILogger logger ) {
+            try {
+                logger.LogInformation($"Calling Flow for sending confirmation emails for {request.AppName}");
+                //This generates a warning re deterministic compliance, however the URL at this stage has the token in which we don't want recorded in the log file
+                string restURI = Environment.GetEnvironmentVariable("FLOW_URL");
+                WebRequest sendEmails = WebRequest.Create(restURI);
+                sendEmails.Method = "POST";
+                sendEmails.ContentType = "application/json; charset=utf-8";
+                var jsonout = JsonSerializer.Serialize(request);
+                using (var streamWriter = new StreamWriter(sendEmails.GetRequestStream())){
+                    streamWriter.Write(JsonSerializer.Serialize(request));
+                    streamWriter.Flush();
+                }
+
+                var httpResponse = await sendEmails.GetResponseAsync();
+                logger.LogInformation($"Flow called for sending confirmation emails for {request.AppName}");
+                return true;    
+            } catch (Exception ex) {
+                throw new Exception($"Error sending confirmation emails: {ex.Message}");
+            }
+        }   
     }
     public static class HttpStart
 {
@@ -759,7 +963,7 @@ namespace GingerDesigns.ecoSytemProvisioner
         ILogger log)
     {
         // Function input comes from the request content.
-        object eventData = await req.Content.ReadAsAsync<ecoSystemRequest>();
+        object eventData = await req.Content.ReadAsAsync<EcoSystemRequest>();
         string instanceId = await starter.StartNewAsync(functionName, eventData);
 
         log.LogInformation($"Started orchestration with ID = '{instanceId}'.");

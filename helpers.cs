@@ -42,7 +42,7 @@ namespace GingerDesigns.ecoSytemProvisioner
     }
 
      [JsonObject(MemberSerialization.OptIn)]
-    public class ecoSystemRequest {
+    public class EcoSystemRequest {
         [JsonProperty("appId")]
         public string AppId {get; set;}
         [JsonProperty("appName")]
@@ -52,7 +52,19 @@ namespace GingerDesigns.ecoSytemProvisioner
         [JsonProperty("budgetCode")]
         public string BudgetCode {get; set;}  
         [JsonProperty("criticality")]
-        public string Criticality {get; set;}       
+        public string Criticality {get; set;}
+        [JsonProperty("pii")]
+        public string PII {get; set;}
+        [JsonProperty("audience")]
+        public string[] Audience {get; set;}
+        [JsonProperty("gitHubOrg")]
+        public string GitHubOrg {get; set;}              
+        [JsonProperty("gitHubRepo")]
+        public string GitHubRepo {get; set;}
+        [JsonProperty("msftTeam")]
+        public string MSFTTeam {get; set;}          
+        [JsonProperty("accessPackageLink")]
+        public string AcccessPackageLink {get; set;}  
     }
     
     public class AadGroupDefinition {
@@ -185,8 +197,9 @@ namespace GingerDesigns.ecoSytemProvisioner
         public string DisplayName {get; set;}
         public string OriginType {get; set;}
         public string OriginSystem {get; set;}
+        public string OriginId {get; set;}
 
-        public AccessPackageResourceToAdd(string catalogId, string resourceId, string accessPackageId, string roleName, string displayName, string originType, string originSystem) {
+        public AccessPackageResourceToAdd(string catalogId, string resourceId, string accessPackageId, string roleName, string displayName, string originType, string originSystem, string originId) {
             this.CatalogId = catalogId;
             this.ResourceId = resourceId;
             this.AccessPackageId = accessPackageId;
@@ -194,6 +207,7 @@ namespace GingerDesigns.ecoSytemProvisioner
             this.DisplayName = displayName;
             this.OriginType = originType;
             this.OriginSystem = originSystem;
+            this.OriginId = originId;
         }
 
 
@@ -352,6 +366,18 @@ namespace GingerDesigns.ecoSytemProvisioner
         public string principalId {get; set;}
         public string principalType {get; set;}
     }
+
+    public class AccessPackagePolicyDefinition {
+        public string AccessPackageId {get; set;}
+        public string Owner {get; set;}
+        public string AppName {get; set;}
+        
+        public AccessPackagePolicyDefinition(string accessPackageId, string owner, string appName) {
+            this.AccessPackageId = accessPackageId;
+            this.Owner = owner;
+            this.AppName = appName;
+        }
+    }
 #endregion
 #region Extension / Helper Classes
     public static class GroupExtension
@@ -402,14 +428,33 @@ namespace GingerDesigns.ecoSytemProvisioner
 
             foreach (var line in System.IO.File.ReadAllLines(filePath))
             {
+                if (line == "") {
+                    continue;
+                }
+
                 var parts = line.Split(
                     '=',
                     StringSplitOptions.RemoveEmptyEntries);
 
-                if (parts.Length != 2)
-                    continue;
-
-                Environment.SetEnvironmentVariable(parts[0], parts[1]);
+                if (parts.Length != 2) {
+                    //continue;
+                    int i = 1;
+                    string val = "";
+                    foreach(string part in parts) {
+                        if (i > 1) {
+                            if (i == 2) {
+                                val += part;
+                            } else {
+                                val += "=" + part;
+                            }
+                            
+                        }
+                        i++;
+                    }
+                    Environment.SetEnvironmentVariable(parts[0], val);
+                } else {
+                    Environment.SetEnvironmentVariable(parts[0], parts[1]);
+                }
             }
         }
     }
@@ -430,7 +475,7 @@ namespace GingerDesigns.ecoSytemProvisioner
                     ? null 
                     : config["UserAssignedIdentity"]),
                 new AzureCliCredential());
-
+            
             var token = credential.GetToken(
                 new Azure.Core.TokenRequestContext(
                     new[] { "https://graph.microsoft.com/.default" }));

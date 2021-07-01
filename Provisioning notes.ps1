@@ -1,6 +1,8 @@
 Connect-AzureAD
 
-$appAccess = New-Object -TypeName "Microsoft.Open.AzureAD.Model.RequiredResourceAccess"
+$appAccess = New-Object -TypeName "Microsoft.Open.AzureAD.Model.RequiredResourceAccess" -ArgumentList "df021288-bdef-4463-88db-98f22de89214", "Scope"
+#User.Read
+$UserRead = New-Object -TypeName "Microsoft.Open.AzureAD.Model.ResourceAccess" -ArgumentList "62a82d76-70ea-41e2-9197-370581804d09","Scope" 
 #Group.ReadWrite.All
 $GroupReadWriteAll = New-Object -TypeName "Microsoft.Open.AzureAD.Model.ResourceAccess" -ArgumentList "62a82d76-70ea-41e2-9197-370581804d09","Scope" 
 #Microsoft.Graph/EntitlementManagement.ReadWrite.All Delegated
@@ -21,16 +23,20 @@ Set-AzureADApplication -ObjectId "" -RequiredResourceAccess $appAccess
 $graphApp = Get-AzureADServicePrincipal -Filter "AppId eq '00000003-0000-0000-c000-000000000000'"
 
 #get Role to read group objects
+$userRead = $graphApp.AppRoles | where-Object {$_.Value -eq "User.Read.All"}
 $groupReadWritePermission = $graphApp.AppRoles | where-Object {$_.Value -eq "Group.ReadWrite.All"}
 $EntitlementManagementReadWriteAll = $graphApp.AppRoles | where-Object {$_.Value -eq "EntitlementManagement.ReadWrite.All"}
 $Teamcreate = $graphApp.AppRoles | where-Object {$_.Value -eq "Team.Create"}
 $AppsRWOb = $graphApp.AppRoles | where-Object {$_.Value -eq "Applications.ReadWrite.OwnedBy"}
+$GroupCreate = $graphApp.AppRoles | where-Object {$_.Value -eq "Group.Create"}
 #use the MSI from the Function App Creation
-$msi = ""
+$msi = "4642fc0a-d7bb-40b1-8f9c-6ca733551b05"
 
 New-AzureADServiceAppRoleAssignment -Id $groupReadWritePermission.Id -ObjectId $msi -PrincipalId $msi -ResourceId $graphApp.ObjectId
 New-AzureADServiceAppRoleAssignment -Id $EntitlementManagementReadWriteAll.Id -ObjectId $msi -PrincipalId $msi -ResourceId $graphApp.ObjectId
 New-AzureADServiceAppRoleAssignment -Id $Teamcreate.Id -ObjectId $msi -PrincipalId $msi -ResourceId $graphApp.ObjectId
 New-AzureADServiceAppRoleAssignment -Id $AppsRWOb.Id -ObjectId $msi -PrincipalId $msi -ResourceId $graphApp.ObjectId
+New-AzureADServiceAppRoleAssignment -Id $GroupCreate.Id -ObjectId $msi -PrincipalId $msi -ResourceId $graphApp.ObjectId
+New-AzureADServiceAppRoleAssignment -Id $userRead.Id -ObjectId $msi -PrincipalId $msi -ResourceId $graphApp.ObjectId
 
 
