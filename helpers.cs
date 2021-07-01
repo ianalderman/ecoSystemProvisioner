@@ -56,7 +56,7 @@ namespace GingerDesigns.ecoSytemProvisioner
         [JsonProperty("pii")]
         public string PII {get; set;}
         [JsonProperty("audience")]
-        public string[] Audience {get; set;}
+        public string Audience {get; set;}
         [JsonProperty("gitHubOrg")]
         public string GitHubOrg {get; set;}              
         [JsonProperty("gitHubRepo")]
