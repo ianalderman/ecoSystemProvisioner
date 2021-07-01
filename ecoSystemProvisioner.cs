@@ -817,7 +817,7 @@ namespace GingerDesigns.ecoSytemProvisioner
                 newRepoFromTemplate.description = repoDef.Description;
                 newRepoFromTemplate.include_all_branches = false;
                 newRepoFromTemplate.owner = repoDef.Org;
-
+                newRepoFromTemplate.Private = true;
                 GitHubRepoFromTemplateMessageMediaType repoMT = new GitHubRepoFromTemplateMessageMediaType();
                 string[] p = new string[1];
                 p[0] = "baptiste";

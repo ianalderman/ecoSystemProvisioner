@@ -293,7 +293,7 @@ namespace GingerDesigns.ecoSytemProvisioner
 
         }
     }
-
+    [JsonObject(MemberSerialization.OptIn)]
     public class GitHubRepoFromTemplateMessage {
         //public string template_owner {get; set;}
         //public string template_repo {get; set;}
@@ -301,7 +301,8 @@ namespace GingerDesigns.ecoSytemProvisioner
         public string description {get; set;}
         public string owner {get; set;}
         public bool include_all_branches {get; set;}
-
+        [JsonProperty("private")]        
+        public bool Private {get; set;}
         //public GitHubRepoFromTemplateMessageMediaType mediaType {get; set;}
 
     }
@@ -475,7 +476,9 @@ namespace GingerDesigns.ecoSytemProvisioner
             //        ? null 
             //        : config["UserAssignedIdentity"]),
             //    new AzureCliCredential());
-            var credential = new DefaultAzureCredential();
+            string managedIdentityClientId = Environment.GetEnvironmentVariable("UserAssignedIdentity");
+            var options = new DefaultAzureCredentialOptions { ManagedIdentityClientId = managedIdentityClientId };
+            var credential = new DefaultAzureCredential(options);
 
             var token = credential.GetToken(
                 new Azure.Core.TokenRequestContext(
@@ -512,7 +515,7 @@ namespace GingerDesigns.ecoSytemProvisioner
             //        : config["UserAssignedIdentity"]),
             //    new AzureCliCredential());
 
-            string managedIdentityClientId = Environment.GetEnvironmentVariable("UserAssignedIdentity", EnvironmentVariableTarget.Process);
+            string managedIdentityClientId = Environment.GetEnvironmentVariable("UserAssignedIdentity");
             var options = new DefaultAzureCredentialOptions { ManagedIdentityClientId = managedIdentityClientId };
             var credential = new DefaultAzureCredential(options);
 
