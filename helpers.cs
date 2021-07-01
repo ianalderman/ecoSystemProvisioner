@@ -470,12 +470,13 @@ namespace GingerDesigns.ecoSytemProvisioner
                 .AddEnvironmentVariables()
                 .Build();
     //DefaultAzureCredential
-            var credential = new ChainedTokenCredential(new EnvironmentCredential(), 
-                new ManagedIdentityCredential(string.IsNullOrEmpty(config["UserAssignedIdentity"])
-                    ? null 
-                    : config["UserAssignedIdentity"]),
-                new AzureCliCredential());
-            
+            //var credential = new ChainedTokenCredential(new EnvironmentCredential(), 
+            //    new ManagedIdentityCredential(string.IsNullOrEmpty(config["UserAssignedIdentity"])
+            //        ? null 
+            //        : config["UserAssignedIdentity"]),
+            //    new AzureCliCredential());
+            var credential = new DefaultAzureCredential();
+
             var token = credential.GetToken(
                 new Azure.Core.TokenRequestContext(
                     new[] { "https://graph.microsoft.com/.default" }));
@@ -505,11 +506,13 @@ namespace GingerDesigns.ecoSytemProvisioner
                 .AddEnvironmentVariables()
                 .Build();
     //DefaultAzureCredential
-            var credential = new ChainedTokenCredential(new EnvironmentCredential(), 
-                new ManagedIdentityCredential(string.IsNullOrEmpty(config["UserAssignedIdentity"])
-                    ? null 
-                    : config["UserAssignedIdentity"]),
-                new AzureCliCredential());
+            //var credential = new ChainedTokenCredential(new EnvironmentCredential(), 
+            //    new ManagedIdentityCredential(string.IsNullOrEmpty(config["UserAssignedIdentity"])
+            //        ? null 
+            //        : config["UserAssignedIdentity"]),
+            //    new AzureCliCredential());
+
+            var credential = new DefaultAzureCredential();
 
             var token = credential.GetToken(
                 new Azure.Core.TokenRequestContext(
@@ -540,12 +543,14 @@ namespace GingerDesigns.ecoSytemProvisioner
                 .AddEnvironmentVariables()
                 .Build();
     //DefaultAzureCredential
-            var credential = new ChainedTokenCredential(new EnvironmentCredential(), 
-                new ManagedIdentityCredential(string.IsNullOrEmpty(config["UserAssignedIdentity"])
-                    ? null 
-                    : config["UserAssignedIdentity"]),
-                new AzureCliCredential());
+            //var credential = new ChainedTokenCredential(new EnvironmentCredential(), 
+            //    new ManagedIdentityCredential(string.IsNullOrEmpty(config["UserAssignedIdentity"])
+            //        ? null 
+            //        : config["UserAssignedIdentity"]),
+            //    new AzureCliCredential());
 
+            var credential = new DefaultAzureCredential();
+            
             var token = credential.GetToken(
                 new Azure.Core.TokenRequestContext(
                     new[] { "https://management.azure.com/.default" }));
