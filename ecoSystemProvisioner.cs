@@ -3,25 +3,21 @@ using V1Graph = V1Lib.Microsoft.Graph;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
-using System.Net.Http.Headers;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Configuration;
-using Azure.Identity;
 using System.Threading.Tasks;
 using Microsoft.Graph;
 using System;
-using System.Text.Json;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.DurableTask;
 using Microsoft.Azure.WebJobs.Extensions.Http;
-using Microsoft.Azure.WebJobs.Host;
-//using Newtonsoft.Json;
-using Microsoft.AspNetCore.Http;
+using Newtonsoft.Json;
 using Octokit;
 using System.Linq;
 using Sodium;
 using System.IO;
 using System.Threading;
+
+
 
 namespace GingerDesigns.ecoSytemProvisioner
 {
@@ -150,6 +146,25 @@ namespace GingerDesigns.ecoSytemProvisioner
             return true;
         }
     }
+    
+     public static class ecoSystemDevOpsOrchestrator {
+        [FunctionName("ecoSystemDevOpsOrchestrator")]
+        public static async Task<bool> Run(
+            [OrchestrationTrigger] IDurableOrchestrationContext context, ILogger logger)
+        {   
+            string appName = context.GetInput<EcoSystemRequest>()?.AppName;
+            EcoSystemRequest ecoSystemRequest = context.GetInput<EcoSystemRequest>();
+
+            var adoProjectId = await context.CallActivityAsync<string>(nameof(createADOProject),ecoSystemRequest);
+
+            AzureDeveOpsServiceConnectionRequest azureDeveOpsServiceConnectionRequest = new  AzureDeveOpsServiceConnectionRequest(appName, "GitHub", adoProjectId);
+            var adoServiceConnectionId = await context.CallActivityAsync<string>(nameof(createADOServiceConnectionForProject),azureDeveOpsServiceConnectionRequest );
+
+            AzureDevOpsPipelineRequest newPipelineRequest = new AzureDevOpsPipelineRequest(appName, adoServiceConnectionId, "egUnicorn/AzureDevOpsPipelineTemplate", "template1.yaml");
+            var adoPipelineId = await context.CallActivityAsync<string>(nameof(createADOPipeline), newPipelineRequest);
+            return true;
+        }
+     }
     public static class getMicrosoftTeamsGroup {
         [FunctionName("getMicrosoftTeamsGroup")]
         public static async Task<string> Run([ActivityTrigger] string teamName, ILogger logger) {
@@ -928,7 +943,111 @@ namespace GingerDesigns.ecoSytemProvisioner
             }
         } 
     }
-   
+
+    public static class createADOProject {
+        [FunctionName("createADOProject")]
+        public static string Run([ActivityTrigger] EcoSystemRequest request, ILogger logger) {
+            try {
+
+                var existingProject = ADOAPIClient.runAPICommand("GET", "projects");
+
+                if (!String.IsNullOrEmpty(existingProject)) {
+                    dynamic projects = JsonConvert.DeserializeObject(existingProject);
+                    foreach(var project in (IEnumerable<dynamic>)projects.value) {
+                        if (request.AppName == project.name.ToString()) {
+                            return project.id.ToString();
+                        }
+                    }
+                }
+
+                string jsonData = $"{{\"name\":\"{request.AppName}\", \"description\": \"Azure DevOps Project for {request.AppName}\", \"capabilities\": {{ \"versioncontrol\": {{ \"sourceControlType\": \"Git\" }}, \"processTemplate\": {{\"templateTypeId\":\"adcc42ab-9882-485e-a3ed-7678f01f66bc\" }}}}}}";
+                string newProjectRequestResponse = ADOAPIClient.runAPICommand("POST", "projects", jsonData);
+                dynamic newProjectRequest = JsonConvert.DeserializeObject(newProjectRequestResponse);
+
+                while (newProjectRequest.status != "succeeded") {
+                    if (newProjectRequest.status == "cancelled" || newProjectRequest.status == "failed") {
+                        throw new Exception($"Unable to create new project returned operation status: {newProjectRequest.status}");
+                    }
+                    Thread.Sleep(2000);
+                    newProjectRequest = JsonConvert.DeserializeObject(ADOAPIClient.runAPICommand("GET", $"operations/{newProjectRequest.id}"));
+                }
+
+                var newProject = ADOAPIClient.runAPICommand("GET", "projects");
+                if (!String.IsNullOrEmpty(newProject)) {
+                    dynamic projects = JsonConvert.DeserializeObject(newProject);
+                    foreach(var project in (IEnumerable<dynamic>)projects.value) {
+                        if (request.AppName == project.name.ToString()) {
+                            return project.id.ToString();
+                        }
+                    }
+                }
+                //Unreachable code in the land of happy paths...
+                throw new Exception("Failed to create / identify new Project Id");
+            } catch (Exception ex) {
+                throw new Exception($"Error creating Azure DevOps Project: {ex.Message}");
+            }
+        }
+    }
+
+    public static class createADOServiceConnectionForProject {
+        [FunctionName("createADOServiceConnectionForProject")]
+        public static async Task<string> Run([ActivityTrigger] AzureDeveOpsServiceConnectionRequest request, ILogger logger) {
+            try {
+                var existingServiceConnections = ADOAPIClient.runAPICommand("GET", "serviceendpoint/endpoints", request.AppName);
+
+                if (!String.IsNullOrEmpty(existingServiceConnections)) {
+                    dynamic serviceConnections = JsonConvert.DeserializeObject(existingServiceConnections);
+                    foreach(var serviceConnection in (IEnumerable<dynamic>)serviceConnections.value) {
+                        if ($"{request.AppName} GitHub Service Connection (PAT)" == serviceConnection.name.ToString()) {
+                            return serviceConnection.id.ToString();
+                        }
+                    }
+                }
+                string endPointName = $"{request.AppName} GitHub Service Connection (PAT)";
+                string jsonData = $"{{\"name\":\"{endPointName}\", \"type\": \"github\", \"url\": \"https://github.com\", \"authorization\": {{\"scheme\": \"PersonalAccessToken\", \"parameters\": {{\"accessToken\":\"{Environment.GetEnvironmentVariable("GITHUB_PAT")}\" }}}}, \"isShared\": false, \"isReady\": true, \"serviceEndpointProjectReferences\": [{{\"projectReference\": {{\"id\": \"{request.AzureDevOpsProjectId}\", \"name\":\"{request.AppName}\"}}, \"name\":\"{endPointName}\"}}]}}";
+                string newServiceConnectionReqeustReponse = ADOAPIClient.runAPICommand("POST", "serviceendpoint/endpoints", "", jsonData);
+                dynamic newServiceConnection = JsonConvert.DeserializeObject(newServiceConnectionReqeustReponse);
+
+                return newServiceConnection.id.ToString();
+
+                //Unreachable code in the land of happy paths...
+                throw new Exception("Failed to create / identify Service Connection");
+               
+            } catch (Exception ex) {
+                throw new Exception($"Error creating Service Connection for  DevOps Project: {ex.Message}");
+            }
+        }
+    }
+
+    public static class createADOPipeline {
+        [FunctionName("createADOPipeline")]
+        public static async Task<string> Run([ActivityTrigger] AzureDevOpsPipelineRequest request, ILogger logger) {
+            try {
+                var existingPipeline = ADOAPIClient.runAPICommand("GET", "pipelines", request.AppName, "", "6.0-preview.1");
+
+                if (!String.IsNullOrEmpty(existingPipeline)) {
+                    dynamic pipelines = JsonConvert.DeserializeObject(existingPipeline);
+                    foreach(var pipeline in (IEnumerable<dynamic>)pipelines.value) {
+                        if ($"{request.AppName} Pipeline" == pipeline.name.ToString()) {
+                            return pipeline.id.ToString();
+                        }
+                    }
+                }
+
+                string jsonData = $"{{\"folder\": null, \"name\":\"{request.AppName} Pipeline\", \"configuration\": {{\"type\":\"yaml\", \"path\":\"{request.TemplateFileName}\",\"repository\": {{\"FullName\":\"{request.TemplateRepoName}\", \"type\": \"gitHub\", \"Connection\": {{\"id\":\"{request.ServiceConnectionId}\"}}}}}}}}";
+                string newPipelineRequest = ADOAPIClient.runAPICommand("POST", "pipelines", request.AppName, jsonData, "6.0-preview.1");
+                dynamic newPipeline = JsonConvert.DeserializeObject(newPipelineRequest);
+
+                return newPipeline.id.ToString();
+
+                //Unreachable code in the land of happy paths...
+                throw new Exception("Failed to create / identify Service Connection");
+            } catch (Exception ex) {
+                throw new Exception($"Error creating Azure DevOps Pipeline: {ex.Message}");
+            }
+        }
+    }
+
     public static class sendConfirmationEmails{
         [FunctionName("sendConfirmationEmails")]
         public static async Task<bool> Run([ActivityTrigger] EcoSystemRequest request, ILogger logger ) {
@@ -939,9 +1058,9 @@ namespace GingerDesigns.ecoSytemProvisioner
                 WebRequest sendEmails = WebRequest.Create(restURI);
                 sendEmails.Method = "POST";
                 sendEmails.ContentType = "application/json; charset=utf-8";
-                var jsonout = JsonSerializer.Serialize(request);
+                var jsonout = System.Text.Json.JsonSerializer.Serialize(request);
                 using (var streamWriter = new StreamWriter(sendEmails.GetRequestStream())){
-                    streamWriter.Write(JsonSerializer.Serialize(request));
+                    streamWriter.Write(System.Text.Json.JsonSerializer.Serialize(request));
                     streamWriter.Flush();
                 }
 

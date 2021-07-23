@@ -5,13 +5,18 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Azure.Identity" Version="1.4.0" />
+    <PackageReference Include="Azure.Security.KeyVault.Secrets" Version="4.2.0" />
     <PackageReference Include="Microsoft.Azure.WebJobs.Extensions.DurableTask" Version="2.5.0" />
     <PackageReference Include="Microsoft.Azure.WebJobs.Extensions.Http" Version="3.0.12" />
-    <PackageReference Include="Microsoft.Graph" Version="4.0.0-preview.7"/>
-    <PackageReference Include="Microsoft.Graph.Beta" Version="4.5.0-preview"/>
+    <PackageReference Include="Microsoft.Graph" Version="4.0.0-preview.7" />
+    <PackageReference Include="Microsoft.Graph.Beta" Version="4.5.0-preview" />
     <PackageReference Include="Microsoft.NET.Sdk.Functions" Version="3.0.13" />
+    <PackageReference Include="Microsoft.TeamFoundation.DistributedTask.WebApi" Version="16.185.0-preview" />
+    <PackageReference Include="Microsoft.VisualStudio.Services.Client" Version="16.185.0-preview" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
     <PackageReference Include="Octokit" Version="0.50.0" />
     <PackageReference Include="Sodium.Core" Version="1.2.3" />
+    <PackageReference Include="System.Net.Http.Json" Version="6.0.0-preview.6.21352.12" />
   </ItemGroup>
     <PropertyGroup>
     <_IsFunctionsSdkBuild>true</_IsFunctionsSdkBuild>

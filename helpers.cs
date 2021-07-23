@@ -12,6 +12,11 @@ using Microsoft.Graph;
 using Newtonsoft.Json;
 using System;
 using System.IO;
+using Microsoft.VisualStudio.Services.Common;
+using Microsoft.VisualStudio.Services.WebApi;
+using Azure.Security.KeyVault.Secrets;
+using System.Net.Http;
+using System.Text;
 
 namespace GingerDesigns.ecoSytemProvisioner
 {
@@ -69,11 +74,9 @@ namespace GingerDesigns.ecoSytemProvisioner
     
     public class AadGroupDefinition {
         public string AppName {get;}
-        //public string Description {get; set;}
 
         public string GroupType {get; }
         public bool ManagerGroup {get;}
-        //public IGroupOwnersCollectionWithReferencesPage Owners {get; set;}
         public List<string> ownersList {get; set;}
         public string Description {
             get {
@@ -127,21 +130,10 @@ namespace GingerDesigns.ecoSytemProvisioner
             }
         }
 
-        public void addOwners(string ownerUPNs) {
-            //GraphServiceClient graphServiceClient = graphClientBuilder.getGraphClient();
-            
+        public void addOwners(string ownerUPNs) {          
             string[] arrUPNs = ownerUPNs.Split(";");
 
             foreach(string ownerUPN in arrUPNs) {
-                /*
-                try {
-                    var owner = await graphServiceClient.Users[$"{ownerUPN}"].Request().GetAsync();
-                    this.Owners.Add(new DirectoryObject {Id = owner.Id});
-
-                } catch {
-                        throw new ArgumentException("Invalid UPN supplied as owner, multiple owners should be seperated by a semicolin (;)");
-                }
-                */
                 this.ownersList.Add(ownerUPN);
             }
         }
@@ -379,6 +371,33 @@ namespace GingerDesigns.ecoSytemProvisioner
             this.AppName = appName;
         }
     }
+
+    public class AzureDeveOpsServiceConnectionRequest {
+        public string AppName {get; set;}
+        public string ServiceConnectionType {get; set;}
+        public string AzureDevOpsProjectId {get; set;}
+
+        public AzureDeveOpsServiceConnectionRequest(string appName, string serviceConnectionType, string azureDevOpsProjectId) {
+            this.AppName = appName;
+            this.ServiceConnectionType = serviceConnectionType;
+            this.AzureDevOpsProjectId = azureDevOpsProjectId;
+        }
+    }
+
+    public class AzureDevOpsPipelineRequest {
+        public string AppName {get; set;}
+        public string ServiceConnectionId {get; set;}
+        public string TemplateRepoName {get; set;}
+        public string TemplateFileName {get; set;}
+
+        public AzureDevOpsPipelineRequest(string appName, string serviceConnectionId, string templateRepoName, string templateFileName) {
+            this.AppName = appName;
+            this.ServiceConnectionId = serviceConnectionId;
+            this.TemplateRepoName = templateRepoName;
+            this.TemplateFileName = templateFileName;
+
+        }
+    }
 #endregion
 #region Extension / Helper Classes
     public static class GroupExtension
@@ -565,5 +584,96 @@ namespace GingerDesigns.ecoSytemProvisioner
             return token.Token;
         }
     }
+
+    static class ADOAPIClient {
+        public static string runAPICommand(string method, string uri, string projectScope = "", string body = "", string apiVersion = "6.0-preview.4") {
+            try {
+                if (String.IsNullOrEmpty(Environment.GetEnvironmentVariable("KEY_VAULT_NAME"))) {
+                    var config = new ConfigurationBuilder()
+                    .SetBasePath(System.IO.Directory.GetCurrentDirectory())
+                    .AddJsonFile("local.settings.json", optional: true, reloadOnChange: true)
+                    .AddEnvironmentVariables()
+                    .Build();
+                }
+
+                var keyVaultName = Environment.GetEnvironmentVariable("KEY_VAULT_NAME");    
+                var kvUri = $"https://{keyVaultName}.vault.azure.net";
+
+                var kvClient = new SecretClient(new Uri(kvUri), new DefaultAzureCredential());
+                var pwdSecret = kvClient.GetSecret("ADOPAT");
+
+                var devopsOrg = Environment.GetEnvironmentVariable("AzureDevOpsOrg");
+
+                if (projectScope != "") {
+                    devopsOrg += $"/{projectScope}";
+                }
+
+                using (HttpClient client = new HttpClient())
+                {
+                    client.DefaultRequestHeaders.Accept.Add(
+                        new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
+
+                    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic",
+                        Convert.ToBase64String(
+                            System.Text.ASCIIEncoding.ASCII.GetBytes(
+                                string.Format("{0}:{1}", "", pwdSecret.Value.Value))));
+                
+                   if (method == "GET") {
+                        using (HttpResponseMessage response = client.GetAsync(
+                                    $"https://dev.azure.com/{devopsOrg}/_apis/{uri}?api-version={apiVersion}").Result)
+                        {
+                            response.EnsureSuccessStatusCode();
+                            string responseBody = response.Content.ReadAsStringAsync().Result;
+                            
+                            return responseBody;
+                        }
+                   }
+
+                   if (method == "POST") {
+                       StringContent data = new StringContent(body, Encoding.UTF8, "application/json");
+
+                       using (HttpResponseMessage response = client.PostAsync(
+                                    $"https://dev.azure.com/{devopsOrg}/_apis/{uri}?api-version={apiVersion}", data).Result)
+                        {
+                            response.EnsureSuccessStatusCode();
+                            string responseBody = response.Content.ReadAsStringAsync().Result;
+                            
+                            return responseBody;
+                        }
+                   }
+                }
+                
+                throw new Exception("Unrecognised Method");
+            } catch (Exception ex) {
+                throw new Exception($"Error running Azure DevOps API Command: {ex.Message}");
+            }
+        }
+    }
+    static class ADOClientBuilder {
+        public static VssConnection getADOClient() {
+            if (String.IsNullOrEmpty(Environment.GetEnvironmentVariable("KEY_VAULT_NAME"))) {
+                    var config = new ConfigurationBuilder()
+                    .SetBasePath(System.IO.Directory.GetCurrentDirectory())
+                    .AddJsonFile("local.settings.json", optional: true, reloadOnChange: true)
+                    .AddEnvironmentVariables()
+                    .Build();
+                }
+
+                var keyVaultName = Environment.GetEnvironmentVariable("KEY_VAULT_NAME");    
+                var kvUri = $"https://{keyVaultName}.vault.azure.net";
+
+                var client = new SecretClient(new Uri(kvUri), new DefaultAzureCredential());
+                var pwdSecret = client.GetSecret("ADOPAT");
+
+                var creds = new VssBasicCredential(string.Empty, pwdSecret.Value.Value);
+            
+                // Connect to Azure DevOps Services
+                string collectionUri = $"https://dev.azure.com/{Environment.GetEnvironmentVariable("AzureDevOpsOrg")}";
+                var connection = new VssConnection(new Uri(collectionUri), creds);
+                
+                return connection;
+        }
+    }
+         
 #endregion
 }
