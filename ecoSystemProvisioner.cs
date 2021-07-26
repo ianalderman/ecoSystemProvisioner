@@ -22,7 +22,6 @@ using System.Text.Encodings;
 namespace GingerDesigns.ecoSytemProvisioner
 {
 
-    /** Need to include process to email Security to set up buddy for new app **/
     public static class ecoSystemOrchestrator {
         [FunctionName("ecoSystemOrchestrator")]
         public static async Task<bool> Run(
