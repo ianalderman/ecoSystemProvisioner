@@ -478,11 +478,10 @@ namespace GingerDesigns.ecoSytemProvisioner
             }
         }
     }
-
     static class graphClientBuilder {
         public static GraphServiceClient getGraphClient() {
-            var dotenv = Path.Combine(System.IO.Directory.GetCurrentDirectory(), ".env");
-            DotEnv.Load(dotenv);
+            //var dotenv = Path.Combine(System.IO.Directory.GetCurrentDirectory(), ".env");
+            //DotEnv.Load(dotenv);
 
             var config = new ConfigurationBuilder()
                 .SetBasePath(System.IO.Directory.GetCurrentDirectory())
@@ -516,7 +515,6 @@ namespace GingerDesigns.ecoSytemProvisioner
             return graphServiceClient;
         }
     }
-
     static class v1GraphClientBuilder {
         public static V1Graph.GraphServiceClient getGraphClient() {
             var dotenv = Path.Combine(System.IO.Directory.GetCurrentDirectory(), ".env");
@@ -555,7 +553,6 @@ namespace GingerDesigns.ecoSytemProvisioner
             return graphServiceClient;
         }
     }
-
     static class AzureManagementToken {
         public static string getAzureManagementToken() {
             var dotenv = Path.Combine(System.IO.Directory.GetCurrentDirectory(), ".env");
@@ -584,7 +581,6 @@ namespace GingerDesigns.ecoSytemProvisioner
             return token.Token;
         }
     }
-
     static class ADOAPIClient {
         public static string runAPICommand(string method, string uri, string projectScope = "", string body = "", string apiVersion = "6.0-preview.4") {
             try {

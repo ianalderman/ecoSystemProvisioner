@@ -16,7 +16,7 @@ using System.Linq;
 using Sodium;
 using System.IO;
 using System.Threading;
-
+using System.Text.Encodings;
 
 
 namespace GingerDesigns.ecoSytemProvisioner
@@ -123,6 +123,15 @@ namespace GingerDesigns.ecoSytemProvisioner
                 ServicePrincipalDefinition spDef = new ServicePrincipalDefinition($"spn-for-{appName}", true, repoDef.Name, repoDef.Org, subscriptionId);
                 var svcP = await context.CallActivityWithRetryAsync<bool>(nameof(createServicePrincipal), retryOptions, spDef);
 
+                var  ecoSystemRequest = context.GetInput<EcoSystemRequest>();
+                var adoProjectId = await context.CallActivityWithRetryAsync<string>(nameof(createADOProject), retryOptions, ecoSystemRequest);
+
+                AzureDeveOpsServiceConnectionRequest azureDeveOpsServiceConnectionRequest = new  AzureDeveOpsServiceConnectionRequest(appName, "GitHub", adoProjectId);
+                var adoServiceConnectionId = await context.CallActivityAsync<string>(nameof(createADOServiceConnectionForProject),azureDeveOpsServiceConnectionRequest );
+
+                AzureDevOpsPipelineRequest newPipelineRequest = new AzureDevOpsPipelineRequest(appName, adoServiceConnectionId, "egUnicorn/AzureDevOpsPipelineTemplate", "template1.yaml");
+                var adoPipelineId = await context.CallActivityAsync<string>(nameof(createADOPipeline), newPipelineRequest);
+
                 //Send confirmation Emails
                 var ecoSystemReq = new EcoSystemRequest() {
                     AppId = context.GetInput<EcoSystemRequest>()?.AppId,
@@ -153,9 +162,34 @@ namespace GingerDesigns.ecoSytemProvisioner
             [OrchestrationTrigger] IDurableOrchestrationContext context, ILogger logger)
         {   
             string appName = context.GetInput<EcoSystemRequest>()?.AppName;
+            string orgName = "EgUnicorn"; // Hard coded for now
+            string orgRepoTemplate = "org-template"; // Hard coded for now
+            string ownerEmail = context.GetInput<EcoSystemRequest>()?.OwnerEmail;
             EcoSystemRequest ecoSystemRequest = context.GetInput<EcoSystemRequest>();
+            
+            var retryOptions = new RetryOptions(
+                    firstRetryInterval: TimeSpan.FromSeconds(5),
+                    maxNumberOfAttempts: 5
+                );
+            retryOptions.BackoffCoefficient = 2;
 
-            var adoProjectId = await context.CallActivityAsync<string>(nameof(createADOProject),ecoSystemRequest);
+            //Add Security Group to contain the Application Team Members
+            AadGroupDefinition teamMembersGroupDef = new AadGroupDefinition(appName, false, false);
+            teamMembersGroupDef.addOwners(ownerEmail);
+                
+            logger.LogDebug("Calling add Team Members AAD Group");
+            var aadTeamMembersGroupId = await context.CallActivityAsync<string>(nameof(createAADGroup),teamMembersGroupDef );
+
+            //Create a default GitHub Repo for the Application
+            var repoDef = new GitHubRepoDefinition(orgName, appName.Replace(" ", "-"), $"Source code for {appName}", orgRepoTemplate);
+            var gitHubRepo = await context.CallActivityAsync<bool>(nameof(addGitHubRepo), repoDef);
+
+            //Create a GitHub Team sync'd to the Application Team Members Security Group
+            var gitHubTeamDefinition = new GitHubTeamDefinition(teamMembersGroupDef.Name, orgName, appName, aadTeamMembersGroupId, teamMembersGroupDef.Name, teamMembersGroupDef.Description, repoDef.Name, repoDef.Org);
+            var gitHubTeam = await context.CallActivityAsync<int>(nameof(addGitHubTeam), gitHubTeamDefinition);
+
+
+            var adoProjectId = await context.CallActivityWithRetryAsync<string>(nameof(createADOProject), retryOptions, ecoSystemRequest);
 
             AzureDeveOpsServiceConnectionRequest azureDeveOpsServiceConnectionRequest = new  AzureDeveOpsServiceConnectionRequest(appName, "GitHub", adoProjectId);
             var adoServiceConnectionId = await context.CallActivityAsync<string>(nameof(createADOServiceConnectionForProject),azureDeveOpsServiceConnectionRequest );
@@ -943,7 +977,6 @@ namespace GingerDesigns.ecoSytemProvisioner
             }
         } 
     }
-
     public static class createADOProject {
         [FunctionName("createADOProject")]
         public static string Run([ActivityTrigger] EcoSystemRequest request, ILogger logger) {
@@ -961,7 +994,7 @@ namespace GingerDesigns.ecoSytemProvisioner
                 }
 
                 string jsonData = $"{{\"name\":\"{request.AppName}\", \"description\": \"Azure DevOps Project for {request.AppName}\", \"capabilities\": {{ \"versioncontrol\": {{ \"sourceControlType\": \"Git\" }}, \"processTemplate\": {{\"templateTypeId\":\"adcc42ab-9882-485e-a3ed-7678f01f66bc\" }}}}}}";
-                string newProjectRequestResponse = ADOAPIClient.runAPICommand("POST", "projects", jsonData);
+                string newProjectRequestResponse = ADOAPIClient.runAPICommand("POST", "projects", "",jsonData, "6.1-preview.4");
                 dynamic newProjectRequest = JsonConvert.DeserializeObject(newProjectRequestResponse);
 
                 while (newProjectRequest.status != "succeeded") {
@@ -969,7 +1002,7 @@ namespace GingerDesigns.ecoSytemProvisioner
                         throw new Exception($"Unable to create new project returned operation status: {newProjectRequest.status}");
                     }
                     Thread.Sleep(2000);
-                    newProjectRequest = JsonConvert.DeserializeObject(ADOAPIClient.runAPICommand("GET", $"operations/{newProjectRequest.id}"));
+                    newProjectRequest = JsonConvert.DeserializeObject(ADOAPIClient.runAPICommand("GET", $"operations/{newProjectRequest.id}","" ,"","6.1-preview.1"));
                 }
 
                 var newProject = ADOAPIClient.runAPICommand("GET", "projects");
@@ -981,7 +1014,7 @@ namespace GingerDesigns.ecoSytemProvisioner
                         }
                     }
                 }
-                //Unreachable code in the land of happy paths...
+                //Unreachable code in the land of happy paths... in the world of sad paths we seem to hit this when the endpoint the GET hits hasn't replicated the new project ID.  Calling the activity with retry should overcome this.
                 throw new Exception("Failed to create / identify new Project Id");
             } catch (Exception ex) {
                 throw new Exception($"Error creating Azure DevOps Project: {ex.Message}");
@@ -1018,7 +1051,6 @@ namespace GingerDesigns.ecoSytemProvisioner
             }
         }
     }
-
     public static class createADOPipeline {
         [FunctionName("createADOPipeline")]
         public static async Task<string> Run([ActivityTrigger] AzureDevOpsPipelineRequest request, ILogger logger) {
